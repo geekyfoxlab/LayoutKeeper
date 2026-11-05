@@ -32,8 +32,13 @@ extension Model {
     /// `currentConfiguration`). `externalRecord` keeps its name but now holds that
     /// configuration's record: the external monitor's, or the built-in-only layout's.
     func refreshExternalMonitor() {
+        let previousConfigurationKey=currentConfiguration?.identity.key
         externalMonitors=MonitorRecognition.externalMonitors(); refreshAuthorization(); externalRecord=nil
-        defer { reloadLibrary() }
+        defer {
+            // 插拔后侧栏跟随当前配置；同一配置下刷新时保留用户正在查看的其他布局。
+            if let key=currentConfiguration?.identity.key,key != previousConfigurationKey { selectScreen(key) }
+            reloadLibrary()
+        }
         guard let config=currentConfiguration else {captureInspection=nil;captureInspectionMessage="";captureInspectionMonitorKey=nil;externalMessage=externalMonitors.isEmpty ? lk("接上外接屏后，我会自动识别它。") : lk("当前版本只支持内置屏加一个外接屏，请只连接一个外接屏。");return}
         let identity=config.identity
         if captureInspectionMonitorKey != identity.key {captureInspection=nil;captureInspectionMessage="";captureInspectionMonitorKey=nil}
@@ -114,6 +119,7 @@ extension Model {
             record.coverage?.readIssueCount=windows.issues.count
             guard let library=screenLibrary,library.currentURL(config.identity.key)==url else { throw LayoutError.unsupported }
             try library.save(record)
+            _=savedWindowBindings.bind(record,snapshot:s,displayToken:config.displayToken)
             externalRecord=record
             selectedScreenKey=config.identity.key; reloadLibrary()
             externalMessage=record.captureSummary

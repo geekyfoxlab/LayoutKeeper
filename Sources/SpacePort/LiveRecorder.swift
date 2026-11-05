@@ -130,6 +130,7 @@ final class LiveRecorder {
         guard gen==generation else { model.logRestore("live-record: scan discarded (display changed while scanning)"); return }
         if let why=pauseReason() { if why != "busy" { model.logRestore("live-record: scan discarded (\(why))") }; return }
         guard let m=model.currentExternalMonitor,m.identity.key==key,m.runtimeDisplayToken==token else { return }
+        model.rememberSavedWindowBindings(snapshot)
         let previousSame=latest.flatMap { rec -> LiveLayoutRecord? in
             guard rec.key==key else { return nil }
             if !rec.frozen { return rec }
@@ -264,11 +265,21 @@ extension Model {
         if let closed=a.sessionClosedAt,pendingSpacesNeeded == nil,Date().timeIntervalSince(closed)>Self.arrivalLifetime { arrival=nil; return nil }
         return a
     }
+    /// 内外屏布局共享已有的运行时身份规则；绑定只驻留内存，原布局文件不变。
+    func rememberSavedWindowBindings(_ snapshot: Snapshot) {
+        guard let library=screenLibrary else { return }
+        for screen in savedScreens where !Self.isUnsaved(screen) {
+            guard let record=try? MonitorLayoutStore.load(from:library.currentURL(screen.key)),
+                  let display=snapshot.displays.first(where:{$0.role==record.monitor.layoutRole}) else { continue }
+            _=savedWindowBindings.bind(record,snapshot:snapshot,displayToken:display.token)
+        }
+    }
     /// The layout a restore works from: arrival record merged with the saved layout during an attach, else the saved layout.
     func effectiveLayout(monitor: MonitorIdentity,saved: MonitorLayoutRecord?,snapshot: Snapshot) -> EffectiveLayout? {
         guard let a=activeArrival(for:monitor,saved:saved) else {
             guard let saved else { return nil }
-            return EffectiveLayout.compose(saved:saved,live:nil,monitor:monitor)
+            let display=snapshot.displays.first(where:{$0.role==monitor.layoutRole})?.token ?? ""
+            return EffectiveLayout.compose(saved:savedWindowBindings.bind(saved,snapshot:snapshot,displayToken:display),live:nil,monitor:monitor)
         }
         if let e=a.effective,a.savedAtWhenComposed==saved?.savedAt { return e }
         var live=a.record; live.monitor=monitor

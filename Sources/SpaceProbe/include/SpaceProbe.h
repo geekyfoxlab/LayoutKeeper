@@ -14,6 +14,9 @@ typedef struct {
 void SPProbeCrossSpaceSymbols(SPCrossSpaceSymbols * _Nonnull out);
 // 1 when macOS >= 26 and every probed symbol resolves. Both dispatch entry points re-check this.
 int SPControlledBridgeAvailable(void);
+// 原生执行层的字段变化检查；与窗口所属进程、窗口 ID 校验配合使用。
+int SPWindowSelectorMatches(CFStringRef _Nullable expectedDocument, CFStringRef _Nullable expectedTitle,
+    CFStringRef _Nullable actualDocument, CFStringRef _Nullable actualTitle);
 // Every argument comes from the confirmed preview. Zero means dispatched, never verified.
 int SPDispatchVerifiedWindow(AXUIElementRef _Nullable element, int32_t expectedPID, uint32_t windowID,
     double expectedLaunchTime, const char * _Nonnull expectedBundleID, const char * _Nonnull expectedDocument, const char * _Nonnull expectedTitle,

@@ -8,7 +8,7 @@ final class UntitledWindowTests: XCTestCase {
         let selector=try JSONDecoder().decode(WindowSelector.self,from:data)
         XCTAssertNil(selector.identifier); XCTAssertTrue(selector.usable)
     }
-    func testUntitledMainWindowCanBeCapturedAndRestored() throws {
+    func testUntitledMainWindowCanBeCapturedAndPlanned() throws {
         let demo=DemoBackend(); var snapshot=demo.state
         snapshot.windows[0].selector=WindowSelector(bundleID:"fixture.app",title:"",identifier:"single-main-window")
         snapshot.windows[0].processStartedAt=Date(timeIntervalSince1970:10)

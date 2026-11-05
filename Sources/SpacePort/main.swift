@@ -80,6 +80,7 @@ final class Model: ObservableObject {
     var quickSnapshot: Snapshot?
     var quickDisplayToken: String?
     var quickMonitor: MonitorIdentity?
+    var savedWindowBindings=SavedWindowBindings()
     var appNameCache: [String:String]=[:]
     var cachedCrossSpaceSupport: CrossSpaceSupport?
     @Published var actionNote: ActionNote?

@@ -17,6 +17,22 @@ final class ManualRestoreTests: XCTestCase {
     func testUnmappedLogicalGroupRequiresExplicitCurrentDesktop() throws {
         let (b,r)=fixture(); XCTAssertEqual(try plan(b,r,groups:[:]).entries[0].status,.blocked)
     }
+    func testTransientSnapshotOmissionIsRetriedWithoutWeakeningIdentity() throws {
+        let (b,r)=fixture();let p=try plan(b,r);var missed=false
+        let report=ManualRestorer.execute(p,windows:b,approved:true,persist:{ journal in
+            if journal.entries.first?.state == .prepared && !missed { b.omitNextSnapshot=true;missed=true }
+        })
+        XCTAssertTrue(missed);XCTAssertEqual(report.journal?.entries.first?.state,.verified);XCTAssertEqual(b.writes,1)
+    }
+    func testRealWindowChangeRecordsExactReasonAndDoesNotWrite() throws {
+        let (b,r)=fixture();let p=try plan(b,r)
+        let report=ManualRestorer.execute(p,windows:b,approved:true,persist:{ journal in
+            if journal.entries.first?.state == .prepared { b.state.windows[0].selector.title="Changed while restoring" }
+        })
+        XCTAssertEqual(b.writes,0);XCTAssertEqual(report.journal?.entries.first?.state,.blocked)
+        XCTAssertTrue(report.journal?.entries.first?.detail.contains("标题变化") == true)
+        XCTAssertEqual(report.journal?.entries.first?.after?.selector.title,"Changed while restoring")
+    }
     func testSameSpaceUsesDocumentIdentityEvenAfterTitleChanges() throws {
         let (b,r)=fixture(); b.state.windows[0].selector.title="新标题"
         XCTAssertEqual(try plan(b,r).entries[0].status,.ready)
@@ -295,8 +311,12 @@ final class MemoryWindows: WindowBackend {
     var beforeWrite: (() -> Void)?; var beforeWriteToken: ((String) -> Void)?
     /// Next N window reads fail as "app did not answer"; tokens in `unresponsiveTokens` never answer.
     var transientReads=0; var unresponsiveTokens=Set<String>()
+    var omitNextSnapshot=false
     init(_ state: Snapshot) { self.state=state }
-    func snapshot() throws -> Snapshot { state }
+    func snapshot() throws -> Snapshot {
+        if omitNextSnapshot { omitNextSnapshot=false;var s=state;s.windows=[];return s }
+        return state
+    }
     func readWindow(token: String) throws -> ObservedWindow? {
         if unresponsiveTokens.contains(token) { throw SlowAppError() }
         if transientReads>0 { transientReads -= 1; throw SlowAppError() }

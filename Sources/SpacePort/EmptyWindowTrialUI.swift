@@ -18,10 +18,12 @@ extension Model {
         // The display the current configuration lives on (the external monitor's
         // token, or the built-in screen's when no external monitor is attached).
         let selected=currentConfiguration?.displayToken
-        return try EmptyWindowTrial.capture(trial:emptyWindowTrial,createdWindowIDs:ids,regular:{ try windows.scan(selectedDisplayToken:selected,inspectionBudget:inspectionBudget) },owned:{ trial,ids in
+        let snapshot=try EmptyWindowTrial.capture(trial:emptyWindowTrial,createdWindowIDs:ids,regular:{ try windows.scan(selectedDisplayToken:selected,inspectionBudget:inspectionBudget) },owned:{ trial,ids in
             var snapshot=try windows.scan(onlyPID:getpid(),selectedDisplayToken:selected,inspectionBudget:inspectionBudget)
             snapshot.windows=snapshot.windows.filter{trial.accepts(token:$0.token,title:$0.selector.title,pid:getpid(),createdWindowIDs:ids)}
             return snapshot
         })
+        rememberSavedWindowBindings(snapshot)
+        return snapshot
     }
 }

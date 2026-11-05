@@ -408,13 +408,13 @@ public enum QuickRestorePlanner {
             if case .window(let token)? = choices[index] { choiceToken=token }
             let appPool=s.windows.filter{ $0.selector.bundleID==saved.selector.bundleID && WindowMatcher.eligible($0,s) }
             // Runtime identity: the very window the live record saw (a pinned token from the preview is the same).
-            if let rt=saved.runtime,let w=s.windows.first(where:{ rt.matches($0) }),choiceToken == nil || choiceToken==w.token {
+            if let rt=saved.runtime,let w=s.windows.first(where:{ rt.matches($0) && $0.selector.bundleID==saved.selector.bundleID }),choiceToken == nil || choiceToken==w.token {
                 item.candidates=appPool.map(candidate)
                 item.chosenToken=w.token; item.currentTitle=w.selector.title; item.currentSlot=WindowMatcher.slot(of:w,displayToken:displayToken,in:s)
                 guard WindowMatcher.eligible(w,s) else {
                     item.state = .missing; item.chosenToken=nil; item.reason=lk("窗口现在最小化、全屏或在多个桌面上，这次没有移动"); continue
                 }
-                item.matchKind=sources[index] == .live ? .runtime : .deskEvidence; item.autoCertain=true
+                item.matchKind=(sources[index] == .live || sources[index] == .saved) ? .runtime : .deskEvidence; item.autoCertain=true
                 switch sources[index] {
                 case .savedDeskEvidence: item.reason=lk("标题已变化；它还在自己原来的桌面上（拔屏时随桌面移到了内置屏），按它恢复")
                 case .companion: item.reason=lk("拔屏时在这块屏的桌面上，跟同一组窗口一起恢复")

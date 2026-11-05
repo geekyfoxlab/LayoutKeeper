@@ -77,6 +77,11 @@ public struct ManualRestoreReport {
 
 // Cross-Space execution requires an explicitly supplied mover; default execution stays same-Space.
 public enum ManualRestorer {
+    private struct LiveCheckFailure: Error,CustomStringConvertible {
+        let description: String
+        let observed: ObservedWindow?
+        var retryable=false
+    }
     private static func topology(_ journal: RestoreJournal,_ snapshot: Snapshot) -> Bool { journal.session==snapshot.session && journal.topology==snapshot.topology }
     private static func targetSpace(_ entry: RestoreJournalEntry) -> UInt64 { entry.targetSpace ?? entry.before.spaceIDs[0] }
     private static func sourceDisplay(_ entry: RestoreJournalEntry) -> String { entry.sourceDisplay ?? entry.targetDisplay }
@@ -103,10 +108,39 @@ public enum ManualRestorer {
         }
     }
     private static func live(_ entry: RestoreJournalEntry,_ journal: RestoreJournal,_ windows: WindowBackend,_ pause: () -> Void) throws -> ObservedWindow? {
+        do { return try checkedLive(entry,journal,windows,pause) }
+        catch is LiveCheckFailure { return nil }
+    }
+    private static func checkedLive(_ entry: RestoreJournalEntry,_ journal: RestoreJournal,_ windows: WindowBackend,_ pause: () -> Void) throws -> ObservedWindow {
         let snapshot=try retrying(pause) { try windows.snapshot() }
-        guard topology(journal,snapshot),validRoute(entry,snapshot),let current=try retrying(pause,{ try windows.readWindow(token:entry.before.token) }),identity(current,entry.before,snapshot,pinned:entry.tokenPinned==true),
-              current.spaceIDs==entry.before.spaceIDs || current.spaceIDs==[targetSpace(entry)] else { return nil }
+        guard topology(journal,snapshot),validRoute(entry,snapshot) else { throw LiveCheckFailure(description:lk("显示器或桌面结构已变化"),observed:nil) }
+        guard let current=try retrying(pause,{ try windows.readWindow(token:entry.before.token) }) else { throw LiveCheckFailure(description:lk("目标窗口暂时读不到"),observed:nil,retryable:true) }
+        guard identity(current,entry.before,snapshot,pinned:entry.tokenPinned==true) else {
+            var reasons=[String]()
+            if current.token != entry.before.token || current.processStartedAt != entry.before.processStartedAt || current.selector.bundleID != entry.before.selector.bundleID { reasons.append(lk("进程或窗口身份变化")) }
+            if current.selector.title != entry.before.selector.title { reasons.append(lk("窗口标题变化")) }
+            if current.selector.document != entry.before.selector.document { reasons.append(lk("文档属性变化")) }
+            if current.selector.identifier != entry.before.selector.identifier { reasons.append(lk("主窗口标识变化")) }
+            if !current.ordinary || current.fullScreen || current.minimized || !current.frame.valid || current.spaceIDs.count != 1 { reasons.append(lk("窗口类型、状态或桌面归属不可用")) }
+            let count=entry.tokenPinned==true ? snapshot.windows.filter{$0.token==current.token}.count : snapshot.windows.filter{entry.before.selector.matches($0.selector)}.count
+            let missing=count==0 && reasons.isEmpty
+            if count != 1 { reasons.append(lk("快照中的匹配窗口数为 %@", "\(count)")) }
+            throw LiveCheckFailure(description:reasons.joined(separator:lk("；")),observed:current,retryable:missing)
+        }
+        guard current.spaceIDs==entry.before.spaceIDs || current.spaceIDs==[targetSpace(entry)] else { throw LiveCheckFailure(description:lk("窗口已移到另一个桌面"),observed:current) }
         return current
+    }
+    /// 只重试读不到/快照漏读；真实的身份、位置或桌面变化仍立即停止，不覆盖用户操作。
+    private static func beforeWrite(_ entry: RestoreJournalEntry,_ journal: RestoreJournal,_ windows: WindowBackend,_ pause: () -> Void) throws -> ObservedWindow {
+        for attempt in 0..<readAttempts {
+            do {
+                let current=try checkedLive(entry,journal,windows,pause)
+                guard current.spaceIDs==entry.before.spaceIDs else { throw LiveCheckFailure(description:lk("写入前窗口所在桌面变化"),observed:current) }
+                guard current.frame.near(entry.before.frame,tolerance:0.01) else { throw LiveCheckFailure(description:lk("写入前窗口位置或大小变化"),observed:current) }
+                return current
+            } catch let error as LiveCheckFailure where error.retryable && attempt+1<readAttempts { pause();pause() }
+        }
+        throw LayoutError.readbackUnavailable
     }
     private static func poll(_ entry: RestoreJournalEntry,_ journal: RestoreJournal,_ windows: WindowBackend,space: UInt64,frame: Rect? = nil,polls: Int,pause: () -> Void) throws -> ObservedWindow? {
         for attempt in 0..<max(polls,1) {
@@ -160,13 +194,13 @@ public enum ManualRestorer {
             if stopAll { journal.entries[i].state = .blocked;journal.entries[i].detail=lk("屏幕、桌面或日志出现问题，已停止后续恢复");continue }
             let entry=journal.entries[i];let target=targetSpace(entry);var writeInvoked=false
             do {
-                guard let initial=try live(entry,journal,windows,pause),initial.spaceIDs==entry.before.spaceIDs,initial.frame.near(entry.before.frame,tolerance:0.01) else { throw LayoutError.readbackUnavailable }
+                let initial=try beforeWrite(entry,journal,windows,pause)
                 if initial.spaceIDs==[target] && initial.frame.near(entry.targetFrame) {
                     journal.entries[i].after=initial;journal.entries[i].state = .unchanged;journal.entries[i].detail=lk("已在目标位置和桌面，没有写入窗口");try persist(journal);continue
                 }
                 journal.entries[i].state = .attempted;journal.entries[i].detail=lk("已保存快照与写入意图")
                 do { try persist(journal) } catch { journal.entries[i].state = .blocked;journal.entries[i].detail=lk("写前日志失败，没有写入此窗口：%@", "\(error)");issues.append(journal.entries[i].detail);stopAll=true;persistenceFailed=true;continue }
-                guard var current=try live(entry,journal,windows,pause),current.spaceIDs==entry.before.spaceIDs,current.frame.near(entry.before.frame,tolerance:0.01) else { throw LayoutError.readbackUnavailable }
+                var current=try beforeWrite(entry,journal,windows,pause)
                 if current.spaceIDs != [target] {
                     guard let spaces,spaces.canMove else { throw LayoutError.unsupported }
                     writeInvoked=true;try spaces.move(window:current,to:target)
@@ -192,7 +226,13 @@ public enum ManualRestorer {
                         journal.entries[i].state = .attempted;journal.entries[i].detail=lk("恢复未通过验证：%@", why)
                         rollback(&journal,only:[i],windows:windows,spaces:spaces,polls:polls,pause:pause,persist:persist,issues:&issues)
                     }
-                } else { journal.entries[i].state = .blocked;journal.entries[i].detail=slow ? lk("应用没有响应，没有移动这个窗口") : lk("写入前窗口或桌面改变，没有写入此窗口") }
+                } else {
+                    journal.entries[i].state = .blocked
+                    if let check=error as? LiveCheckFailure {
+                        journal.entries[i].after=check.observed
+                        journal.entries[i].detail=lk("写入前检查未通过，没有移动：%@",check.description)
+                    } else { journal.entries[i].detail=slow ? lk("应用没有响应，没有移动这个窗口") : lk("写入前检查未通过，没有移动：%@",why) }
+                }
                 failures.append(RestoreFailure(bundleID:entry.before.selector.bundleID,reason:slow ? .notResponding : (writeInvoked ? .failed : .changed)))
                 do { try persist(journal) } catch { issues.append(lk("最终日志更新失败：%@", "\(error)")); stopAll=true; persistenceFailed=true }
                 // Screens or Spaces changed under us: nothing else can be trusted this run.

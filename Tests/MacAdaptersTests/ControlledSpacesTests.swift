@@ -16,6 +16,22 @@ final class ControlledSpacesTests: XCTestCase {
         let (w,s,p,c)=try fixture(); let move=try ControlledSpaceGate.resolve(window:w,to:2,permit:p,snapshot:s,claim:c)
         XCTAssertEqual(move.source,1);XCTAssertEqual(move.target,2);XCTAssertEqual(move.targetDisplay,"b")
     }
+    func testUntitledWindowStillRequiresUniqueMatchAndUnchangedOwnership() throws {
+        let (original,base,_,claim)=try fixture()
+        var w=original;var s=base
+        w.selector=WindowSelector(bundleID:w.selector.bundleID,title:"",identifier:"single-main-window")
+        s.windows=[w]
+        let p=try SpaceMovePermit(window:w,targetSpace:2,targetDisplay:"b",snapshot:s)
+        XCTAssertEqual(try ControlledSpaceGate.resolve(window:w,to:2,permit:p,snapshot:s,claim:claim).target,2)
+        var changed=claim;changed.processStartedAt=Date(timeIntervalSince1970:11)
+        XCTAssertThrowsError(try ControlledSpaceGate.resolve(window:w,to:2,permit:p,snapshot:s,claim:changed))
+        changed=claim;changed.windowID=10
+        XCTAssertThrowsError(try ControlledSpaceGate.resolve(window:w,to:2,permit:p,snapshot:s,claim:changed))
+        changed=claim;changed.cgPID=45
+        XCTAssertThrowsError(try ControlledSpaceGate.resolve(window:w,to:2,permit:p,snapshot:s,claim:changed))
+        var other=w;other.token="44:10";s.windows.append(other)
+        XCTAssertThrowsError(try ControlledSpaceGate.resolve(window:w,to:2,permit:p,snapshot:s,claim:claim))
+    }
     func testReverseTransitionIsAllowedForRollbackWithSameIdentity() throws {
         let (window,snapshot,p,c)=try fixture();var w=window;var s=snapshot;w.spaceIDs=[2];w.frame=Rect(1100,20,400,400);s.windows=[w]
         let move=try ControlledSpaceGate.resolve(window:w,to:1,permit:p,snapshot:s,claim:c)

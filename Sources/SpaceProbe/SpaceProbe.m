@@ -83,6 +83,10 @@ static id controlledAttribute(AXUIElementRef element,CFStringRef key) {
     if (AXUIElementCopyAttributeValue(element,key,&value)!=kAXErrorSuccess || !value) return nil;
     return CFBridgingRelease(value);
 }
+int SPWindowSelectorMatches(CFStringRef expectedDocument,CFStringRef expectedTitle,CFStringRef actualDocument,CFStringRef actualTitle) {
+    if (!expectedDocument || !expectedTitle || !actualDocument || !actualTitle) return 0;
+    return (!CFStringGetLength(expectedDocument) || CFEqual(expectedDocument,actualDocument)) && CFEqual(expectedTitle,actualTitle);
+}
 static NSString *displayTokenForManagedRow(NSDictionary *row) {
     NSString *identifier=row[@"Display Identifier"];
     if (![identifier isKindOfClass:NSString.class]) return nil;
@@ -142,7 +146,8 @@ int SPDispatchVerifiedWindow(AXUIElementRef element,int32_t expectedPID,uint32_t
     NSString *documentValue=[readDocument isKindOfClass:NSURL.class] ? [readDocument absoluteString] : ([readDocument isKindOfClass:NSString.class] ? readDocument : @"");
     id readTitle=controlledAttribute(element,kAXTitleAttribute);
     NSString *titleValue=[readTitle isKindOfClass:NSString.class] ? readTitle : @"";
-    if (!document || !title || (!document.length && !title.length) || (document.length && ![documentValue isEqual:document]) || ![titleValue isEqual:title])
+    // 上面已复核进程和窗口 ID；这里只检查字段变化，空标题和文档本身不代表窗口身份失效。
+    if (!SPWindowSelectorMatches((__bridge CFStringRef)document,(__bridge CFStringRef)title,(__bridge CFStringRef)documentValue,(__bridge CFStringRef)titleValue))
         return fail(detail,capacity,"Window selector changed since confirmation");
     NSArray *windowRows=CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow,windowID));
     int ownedCount=0;
