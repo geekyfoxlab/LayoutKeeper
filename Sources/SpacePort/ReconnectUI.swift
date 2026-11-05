@@ -7,7 +7,8 @@ import MacAdapters
 
 /// Reconnect / wake handling. Stage 1: screens stable for 3 s (ReconnectWatch). Then the per-monitor policy decides:
 /// ask once → remember the answer; ask → prompt; auto → stage 2 waits until window frames stop moving (FrameSettle),
-/// then restores only unambiguous windows and posts an undoable notification. Unplugging does nothing. Pause suppresses all.
+/// then restores only unambiguous windows and posts an undoable notification. Unplugging settles back to the
+/// built-in-only layout (handleSettledUnplug). Pause suppresses all.
 final class ReconnectCoordinator {
     let model: Model
     let showMain: () -> Void
@@ -75,6 +76,9 @@ final class ReconnectCoordinator {
         if attemptInFlight { model.logRestore("reconnect: restore in progress, evaluating again in 1s"); schedule(after:1); return }
         model.refreshExternalMonitor()
         let monitor=model.currentExternalMonitor
+        // Unplug direction: remember the last settled state *before* this evaluation, so a
+        // settle that ends with no external monitor can still restore the built-in-only layout.
+        let previousSettled=session.lastSettledKey
         var decision=session.evaluate(at:Date(),fingerprint:Self.screenFingerprint(),monitorKey:monitor.map(Self.physicalKey))
         if case .closed(_,let line)=decision { model.logRestore(line); model.logSession(line); decision=session.startOpened() }
         switch decision {
@@ -82,6 +86,7 @@ final class ReconnectCoordinator {
         case .idle, .closed: break
         case .ignored(let note):
             model.logRestore("reconnect: \(note)")
+            handleSettledUnplug(previousSettled:previousSettled)
         case .start(let id,let key,let retry):
             model.logRestore("attach #\(id) start\(retry ? " (retry)" : ""): screens settled after \(eventStarted.map{ String(format:"%.2fs",Date().timeIntervalSince($0)) } ?? "?"), monitor=\(RestoreLog.key(key))")
             model.logRestoreLines(model.environmentLines(label:"settled"))
@@ -90,6 +95,29 @@ final class ReconnectCoordinator {
             if LiveRecorder.screenLocked() { if unreadable(id,"screen locked or displays asleep") { return } }
             model.activateArrival(for:monitor,session:id)
             trigger(monitor,id:id)
+        }
+    }
+    /// Unplug direction (v1): after the displays settle with no external monitor, restore the
+    /// saved built-in-only layout ("builtin-only") when the previous settled state had an
+    /// external monitor. Deliberately simpler than the attach path: no FrameSettle wait or
+    /// retry machine — the saved layout is the fallback, and a manual restore fixes any
+    /// window that was still migrating when the planner ran. Not triggered when the settle
+    /// closes an open attach session (see AttachSession: unplugged-before-restore) — the
+    /// user can restore manually from the menu or hotkey in that case.
+    private func handleSettledUnplug(previousSettled: String?) {
+        guard let previousSettled,!previousSettled.isEmpty else { return }
+        guard model.currentExternalMonitor == nil,model.externalMonitors.isEmpty else { return }
+        guard let record=model.externalRecord,record.monitor.isBuiltInOnly else { return }
+        let action=ReconnectPolicy.action(global:model.autoRestoreMode,perMonitor:model.monitorPreferences.restore(MonitorIdentity.builtInOnlyKey),pausedUntil:model.pausedUntil,now:Date())
+        model.logRestore("unplug: settled with no external monitor (was \(RestoreLog.key(previousSettled))); built-in-only layout has \(record.profile.windows.count) windows; policy=\(action)")
+        switch action {
+        case .auto:
+            let outcome=model.directRestore(.automatic)
+            if let notice=model.restoreNotice(outcome,trigger:.automatic) { model.notify?(notice) }
+        case .ask, .askOnce:
+            model.notify?(UserNotice(title:lk("已拔掉外接屏"),detail:lk("内屏已保存 %@ 个窗口的布局，要现在恢复吗？", "\(record.profile.windows.count)"),actions:[UserNotice.Action(.restoreNow) { [weak self] in self?.model.quickRestore() }],duration:0))
+        case .none, .paused:
+            break
         }
     }
     private func trigger(_ monitor: ConnectedMonitor,id: Int) {
@@ -151,7 +179,7 @@ final class ReconnectCoordinator {
         model.warmUpSavedApps(record)
         model.windows.patientReads=true
         let read: Snapshot?
-        do { read=try model.externalLayoutSnapshot() } catch { read=nil; model.logRestore("attach #\(id): window scan error \(String(describing:error).prefix(120))") }
+        do { read=try model.currentLayoutSnapshot() } catch { read=nil; model.logRestore("attach #\(id): window scan error \(String(describing:error).prefix(120))") }
         model.windows.patientReads=false
         model.logRestore(String(format:"attach #\(id): warm-up + first scan took %.2fs, scan issues=%d",Date().timeIntervalSince(started),model.windows.issues.count))
         guard let snapshot=read else { model.logRestore("attach #\(id): window scan failed, restoring anyway"); finishAuto(monitor,id:id); return }

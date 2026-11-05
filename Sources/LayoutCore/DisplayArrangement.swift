@@ -224,10 +224,10 @@ public enum ArrangementGeometry {
             for parent in order {
                 guard let i=rest.firstIndex(where:{ edge(of:$0.rect,against:parent.rect) != nil }) else { continue }
                 let child=rest.remove(at:i)
-                let edge=edge(of:child.rect,against:parent.rect)!
-                let (anchor,offset)=anchor(of:child.rect,against:parent.rect,edge:edge)
+                let sharedEdge=edge(of:child.rect,against:parent.rect)!
+                let (anchor,offset)=anchor(of:child.rect,against:parent.rect,edge:sharedEdge)
                 out.append(ArrangementDisplay(key:child.key,uuid:child.uuid,name:child.name,builtIn:child.builtIn,width:child.width,height:child.height,x:child.x,y:child.y,
-                                              relation:ArrangementRelation(parent:parent.key,edge:edge,anchor:anchor,offset:offset)))
+                                              relation:ArrangementRelation(parent:parent.key,edge:sharedEdge,anchor:anchor,offset:offset)))
                 order.append(child); progressed=true; break
             }
             if !progressed { return .failure(.notAdjacent) }
