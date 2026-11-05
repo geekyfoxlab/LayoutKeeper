@@ -31,12 +31,15 @@ public struct Space: Codable, Equatable {
 }
 public struct WindowSelector: Codable, Equatable, Hashable {
     public var bundleID: String; public var document: String?; public var title: String
-    public init(bundleID: String, document: String? = nil, title: String) { self.bundleID=bundleID; self.document=document; self.title=title }
-    public var usable: Bool { !bundleID.isEmpty && (!(document ?? "").isEmpty || !title.isEmpty) }
+    /// 可选语义标识：用于没有标题的唯一主窗口；旧布局缺失该字段仍正常读取。
+    public var identifier: String?
+    public init(bundleID: String, document: String? = nil, title: String, identifier: String? = nil) { self.bundleID=bundleID; self.document=document; self.title=title; self.identifier=identifier }
+    public var usable: Bool { !bundleID.isEmpty && (!(document ?? "").isEmpty || !title.isEmpty || !(identifier ?? "").isEmpty) }
     public func matches(_ other: WindowSelector) -> Bool {
         guard bundleID == other.bundleID else { return false }
         if let document, !document.isEmpty { return document == other.document }
-        return !title.isEmpty && title == other.title
+        if !title.isEmpty { return title == other.title }
+        return identifier != nil && identifier == other.identifier
     }
 }
 public struct ObservedWindow: Codable, Equatable {

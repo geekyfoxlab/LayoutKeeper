@@ -6,7 +6,8 @@ import MacAdapters
 
 enum RestoreTrigger { case manual, automatic }
 struct DirectRestoreOutcome {
-    var restored=0, attempted=0, needsConfirmation=0, skippedAuto=0
+    var restored=0, attempted=0, needsConfirmation=0, skippedAuto=0, blocked=0
+    var blockedReasons: [String]=[]
     var error: String?
     var failures: [RestoreFailure]=[]
     /// Which windows (tokens) this restore verified or failed; lets multi-step attaches count each window once.
@@ -91,6 +92,9 @@ extension Model {
         if !quickMessage.isEmpty { logRestore("directRestore \(tag): planner message: \(quickMessage.prefix(200))") }
         defer { if let plan=quickPlan { noteSharedPlan(plan) } }
         outcome.needsConfirmation=plan.items.filter{$0.state == .needsConfirmation}.count
+        let blocked=plan.items.filter{$0.state == .blocked}
+        outcome.blocked=blocked.count
+        outcome.blockedReasons=blocked.map{ "\(appName($0.bundleID))：\($0.reason)" }
         let runnable=trigger == .automatic ? QuickRestorePlanner.autoSubset(plan).entries.count : plan.readyCount
         outcome.skippedAuto=plan.readyCount-runnable
         guard runnable>0 else {
@@ -108,7 +112,7 @@ extension Model {
             let ok=Set(entries.filter{ $0.state == .verified }.map(\.before.token))
             outcome.tally.add(verified:ok,failed:Set(entries.filter{ ![.verified,.unchanged].contains($0.state) }.map(\.before.token)).subtracting(ok))
         }
-        if result.attempted>0 { lastRestoreSummary=RestoreSummary(at:Date(),restored:result.verified,needsConfirmation:outcome.needsConfirmation,failed:result.attempted-result.verified) }
+        if result.attempted>0 { lastRestoreSummary=RestoreSummary(at:Date(),restored:result.verified,needsConfirmation:outcome.needsConfirmation,failed:result.attempted-result.verified+outcome.blocked) }
         requestLiveCheck?()
         return outcome
     }
@@ -127,7 +131,7 @@ extension Model {
             return UserNotice(title:trigger == .automatic ? lk("没有自动恢复") : lk("没有恢复"),detail:error,duration:5)
         }
         // Closed saved windows and groups without a desk, appended to whatever the notice says.
-        var extra=o.staleText
+        var extra=o.staleText + o.blockedReasons
         if o.unplacedGroups>0 && !sharedModeActive { extra.append(lk("还缺 %@ 个桌面：第 %@ 个桌面的窗口没有移动，补好桌面后再恢复一次", "\(o.missingDesktops)", Self.positionList(o.unplacedPositions))) }
         let extraText=extra.isEmpty ? nil : extra.joined(separator:lk("；"))+(o.staleText.isEmpty ? "" : lk("。重新保存一次布局后就不再提示。"))
         func join(_ a: String?,_ b: String?) -> String? { [a,b].compactMap{ $0 }.isEmpty ? nil : [a,b].compactMap{ $0 }.joined(separator:"\n") }
@@ -135,7 +139,7 @@ extension Model {
             if o.failures.isEmpty && o.needsConfirmation == 0 && o.skippedAuto == 0,let extraText {
                 // Automatic: when all open windows are already in place and no desktops are missing, closed windows from an
                 // older save need no banner; manual restore still reports them.
-                if trigger == .automatic && (o.unplacedGroups == 0 || sharedModeActive) { return nil }
+                if trigger == .automatic && o.blocked == 0 && (o.unplacedGroups == 0 || sharedModeActive) { return nil }
                 return UserNotice(title:o.staleText.isEmpty ? lk("有窗口没有移动") : lk("保存的部分窗口已关闭"),detail:extraText,actions:[view],duration:attention,open:openResult)
             }
             if !o.failures.isEmpty { return UserNotice(title:lk("没有恢复窗口"),detail:Self.failureText(o.failures),actions:[retry,view],duration:attention,open:openResult) }
@@ -146,13 +150,14 @@ extension Model {
         }
         let extraWithStrip=o.stripNotices.isEmpty ? extraText : join(o.stripNotices.joined(separator:lk("；")),extraText)
         var title=lk("已恢复 %@ 个窗口", "\(o.restored)")
+        if o.blocked>0 { title+=lk(" · %@ 个未恢复", "\(o.blocked)") }
         if o.needsConfirmation>0 { title+=lk(" · %@ 个需确认", "\(o.needsConfirmation)") }
         let detail: String? = join(!o.failures.isEmpty ? Self.failureText(o.failures) : (o.failed>0 ? lk("%@ 个未通过，已回滚", "\(o.failed)") : (o.skippedAuto>0 ? lk("%@ 个窗口无法唯一确认，没有自动移动", "\(o.skippedAuto)") : nil)),extraWithStrip)
         var actions=[UserNotice.Action]()
         if !o.failures.isEmpty { actions.append(retry) }
         if lastRestoreJournal?.canUndo == true { actions.append(UserNotice.Action(.undo) { [weak self] in NSApp.activate(ignoringOtherApps:true); self?.undoExternalRestore(); self?.requestLiveCheck?() }) }
         actions.append(view)
-        let problem=o.failed>0 || !o.failures.isEmpty
+        let problem=o.failed>0 || !o.failures.isEmpty || o.blocked>0
         return UserNotice(title:title,detail:detail,actions:actions,
                      duration:problem || o.needsConfirmation>0 || o.skippedAuto>0 ? attention : (trigger == .automatic ? 7 : 5),open:openResult)
     }

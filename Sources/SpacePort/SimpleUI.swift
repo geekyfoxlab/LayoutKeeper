@@ -118,7 +118,7 @@ extension Model {
             selectedScreenKey=config.identity.key; reloadLibrary()
             externalMessage=record.captureSummary
             message=record.captureReport?.json() ?? "{}"
-            actionNote=ActionNote(icon:"checkmark.circle.fill",text:lk("已保存 %@ 个窗口", "\(record.profile.windows.count)")+(replaced ? lk(" · 旧版本已存入历史") : ""),tone:.success)
+            actionNote=ActionNote(icon:"checkmark.circle.fill",text:lk("已保存 %@ 个窗口", "\(record.profile.windows.count)")+(replaced ? lk(" · 旧版本已存入历史") : "")+(record.completeness == .partial ? lk(" · 部分窗口未保存，请查看采集统计") : ""),tone:record.completeness == .partial ? .warning : .success)
             return .saved(count:record.profile.windows.count,replaced:replaced)
         } catch {
             externalMessage=ExternalSaveMessage.failure(error:error,phase:phase)

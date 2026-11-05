@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <libproc.h>
 #import "SpaceProbe.h"
 
 // ABI first read from the 27.0/26A428 runtime; every call re-checks the method signatures at runtime. No hidden function addresses are used.
@@ -11,6 +12,12 @@
 - (void)performWithWMBridgeDelegate;
 @end
 
+// 与 Swift 窗口适配器使用同一内核时间；缺失时仍拒绝移动，保留 PID 复用保护。
+double SPProcessStartTime(int32_t pid) {
+    struct proc_bsdinfo info={0};
+    if (pid<=0 || proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&info,sizeof(info))!=sizeof(info) || info.pbi_pid!=(uint32_t)pid || !info.pbi_start_tvsec) return 0;
+    return (double)info.pbi_start_tvsec+(double)info.pbi_start_tvusec/1000000.0;
+}
 static int fail(char *detail, size_t capacity, const char *reason) {
     if (capacity) snprintf(detail,capacity,"%s",reason);
     return -1;
@@ -117,7 +124,8 @@ int SPDispatchVerifiedWindow(AXUIElementRef element,int32_t expectedPID,uint32_t
         return fail(detail,capacity,"AX PID differs from confirmed PID");
     NSRunningApplication *app=[NSRunningApplication runningApplicationWithProcessIdentifier:expectedPID];
     NSString *bundle=[NSString stringWithUTF8String:expectedBundleID];
-    if (!app || app.terminated || !app.launchDate || !bundle.length || ![app.bundleIdentifier isEqual:bundle] || fabs(app.launchDate.timeIntervalSince1970-expectedLaunchTime)>0.001)
+    double startedAt=SPProcessStartTime(expectedPID);
+    if (!app || app.terminated || startedAt<=0 || !bundle.length || ![app.bundleIdentifier isEqual:bundle] || fabs(startedAt-expectedLaunchTime)>0.001)
         return fail(detail,capacity,"Process lifetime or bundle identity changed");
     void *local=dlopen(NULL,RTLD_LAZY);
     int (*getWindow)(AXUIElementRef,uint32_t *)=local ? dlsym(local,"_AXUIElementGetWindow") : NULL;

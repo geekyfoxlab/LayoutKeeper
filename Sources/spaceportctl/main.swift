@@ -25,13 +25,21 @@ case "capture-coverage":
         for (index,space) in spaces.filter({$0.displayToken==display.token && $0.kind == .ordinary}).enumerated() {slotBySpace[space.id]="\(display.role.rawValue)#\(index+1)"}
     }
     var resolved=[Int32:Set<UInt32>]()
+    var usableSelectors=[Int32:Int](),verifiedLifetimes=[Int32:Int]()
     let trusted=AXIsProcessTrusted()
     var axStatus="not trusted: only CG candidates are listed (no prompt issued)"
     if trusted {
         let windows=AXWindows(spaces:backend)
         let external=displays.first{$0.role == .external}?.token
         if let snapshot=try? windows.scan(selectedDisplayToken:external) {
-            for w in snapshot.windows { let parts=w.token.split(separator:":"); if parts.count==2,let pid=Int32(parts[0]),let id=UInt32(parts[1]) {resolved[pid,default:[]].insert(id)} }
+            for w in snapshot.windows {
+                let parts=w.token.split(separator:":")
+                if parts.count==2,let pid=Int32(parts[0]),let id=UInt32(parts[1]) {
+                    resolved[pid,default:[]].insert(id)
+                    if w.selector.usable { usableSelectors[pid,default:0]+=1 }
+                    if w.processStartedAt != nil { verifiedLifetimes[pid,default:0]+=1 }
+                }
+            }
             axStatus="trusted: AX resolved \(snapshot.windows.count) readable windows; report summary: \(windows.latestCaptureReport.summary)"
         } else { axStatus="trusted but scan failed" }
     }
@@ -42,7 +50,7 @@ case "capture-coverage":
         let candidates=mine.filter{WindowCandidateRules.exclusion($0)==nil}
         var excluded=[String:Int]()
         for row in mine { if let reason=WindowCandidateRules.exclusion(row) {excluded[reason.rawValue,default:0]+=1} }
-        rows.append(["bundleID":bundle,"cgCandidates":candidates.map{["windowID":$0.windowID,"slot":($0.spaceIDs?.count==1 ? slotBySpace[$0.spaceIDs![0]] : nil) ?? "other/unknown","axResolved":resolved[pid]?.contains($0.windowID) ?? false] as [String:Any]},"excludedLayerZero":excluded])
+        rows.append(["bundleID":bundle,"usableSelectors":usableSelectors[pid] ?? 0,"verifiedProcessLifetimes":verifiedLifetimes[pid] ?? 0,"cgCandidates":candidates.map{["windowID":$0.windowID,"slot":($0.spaceIDs?.count==1 ? slotBySpace[$0.spaceIDs![0]] : nil) ?? "other/unknown","axResolved":resolved[pid]?.contains($0.windowID) ?? false] as [String:Any]},"excludedLayerZero":excluded])
     }
     print(MacEnvironment.json(["windowServerTraitsAvailable":inventory.traitsAvailable,"accessibility":axStatus,"applications":rows]))
 case "simulate", "simulate-noop":

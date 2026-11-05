@@ -69,7 +69,7 @@ public enum BrowserTitles {
 /// `runtime`: the same window as in the live record (same CGWindowID token, same app launch), whatever its title is now.
 /// `deskEvidence`: a window that provably was on the monitor at the unplug (it is still on one of the monitor's desks
 /// that macOS moved to the built-in screen); see `EffectiveLayout.compose`.
-public enum MatchKind: String, Codable { case document, title, browserTitle, browserProfile, tieBreak, slotGeometry, userChoice, onlyWindow, elimination, runtime, deskEvidence, none }
+public enum MatchKind: String, Codable { case document, title, identifier, browserTitle, browserProfile, tieBreak, slotGeometry, userChoice, onlyWindow, elimination, runtime, deskEvidence, none }
 
 public struct WindowMatch {
     public enum Verdict: Equatable { case unique, needsConfirmation, missing }
@@ -106,7 +106,8 @@ public enum WindowMatcher {
             return !a.isEmpty && a==b ? .browserTitle : nil
         }
         if let doc=s.document,!doc.isEmpty { return w.selector.document==doc ? .document : nil }
-        return !s.title.isEmpty && s.title==w.selector.title ? .title : nil
+        if !s.title.isEmpty { return s.title==w.selector.title ? .title : nil }
+        return s.identifier != nil && s.identifier==w.selector.identifier ? .identifier : nil
     }
     /// `savedOfApp`: how many windows of this app the layout saved. When it is 1 and the app has exactly one window now,
     /// that window is taken even if its title changed (a renamed chat or editor window is still the same window).
@@ -184,6 +185,10 @@ public enum WindowMatcher {
             let left=narrowed(sameProfile.isEmpty ? strongs.map(\.0) : sameProfile)
             if left.count==1 { return WindowMatch(verdict:.unique,kind:.tieBreak,chosen:left[0],candidates:allPool,reason:lk("同名窗口有多个，按保存时的桌面和位置选中一个")) }
             return WindowMatch(verdict:.needsConfirmation,kind:.none,chosen:nil,candidates:allPool,reason:lk("有 %@ 个同名窗口，无法确定是哪一个，请选择", "\(strongs.count)"))
+        }
+        // 唯一主窗口标识失效时不得退化成按应用猜测另一个窗口。
+        if saved.selector.identifier != nil {
+            return WindowMatch(verdict:.needsConfirmation,kind:.none,chosen:nil,candidates:allPool,reason:lk("无法确认原来的无标题主窗口，请选择对应窗口"))
         }
         // No title/document match.
         if BrowserTitles.isBrowser(saved.selector.bundleID),let index=saved.desktopIndex {
@@ -347,7 +352,7 @@ public struct PinnedMatch: Equatable { public var kind: MatchKind; public var au
 ///  3. Placement: target desk and frame per identified window; positions without a desk are left alone and reported.
 public enum QuickRestorePlanner {
     public static let oldRecordReason=lk("旧版布局缺少桌面顺序，请先重新保存一次此屏布局")
-    static let savedOnlyKinds: Set<MatchKind>=[.document,.title,.browserTitle,.tieBreak,.userChoice]
+    static let savedOnlyKinds: Set<MatchKind>=[.document,.title,.identifier,.browserTitle,.tieBreak,.userChoice]
 
     /// The 1-based slot on `displayToken` that counts as "the saved desk" when judging whether a window sits there:
     /// its own desk by identity when that desk is on this display; nil when the desk is known to be elsewhere
@@ -524,7 +529,7 @@ public enum QuickRestorePlanner {
         // Last window of an app: when every other saved window of the app is matched for certain and the app has as
         // many live windows as saved ones, the single remaining Chrome slot match is certain too (unless a known
         // profile folder contradicts it).
-        let strongKinds: Set<MatchKind>=[.document,.title,.browserTitle,.browserProfile,.onlyWindow,.runtime,.deskEvidence]
+        let strongKinds: Set<MatchKind>=[.document,.title,.identifier,.browserTitle,.browserProfile,.onlyWindow,.runtime,.deskEvidence]
         for bundle in Set(items.map(\.bundleID)) {
             let mine=items.indices.filter{ items[$0].bundleID==bundle }
             let weak=mine.filter{ !(strongKinds.contains(items[$0].matchKind) && [.ready,.alreadyInPlace].contains(items[$0].state)) }
@@ -627,7 +632,7 @@ public enum QuickRestorePlanner {
         if item.autoCertain && (item.matchKind == .elimination || item.matchKind == .slotGeometry) { return true }
         // Only confidently identified windows move on their own. Being on the other display is not a reason to hold
         // back: after a plug-in nearly every window is, and manual restore moves them the same way.
-        return [.document,.title,.browserTitle,.browserProfile,.onlyWindow,.runtime,.deskEvidence].contains(item.matchKind)
+        return [.document,.title,.identifier,.browserTitle,.browserProfile,.onlyWindow,.runtime,.deskEvidence].contains(item.matchKind)
     }
     /// Whether `w` is plausibly the saved window: same title or document (browser page title for browsers), or the
     /// same Chrome profile. Only such a window may make a saved window count as "already in place".

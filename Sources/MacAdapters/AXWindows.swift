@@ -91,7 +91,7 @@ public final class AXWindows: WindowBackend {
         guard handles[token]==nil else{exclude(.duplicateWindowID,bundle);return false}
         axWindowIDs[app.processIdentifier,default:[]].insert(id)
         axSources[id]=source
-        handles[token]=Handle(element:element,pid:app.processIdentifier,windowID:id,bundleID:bundle,launchedAt:app.launchDate)
+        handles[token]=Handle(element:element,pid:app.processIdentifier,windowID:id,bundleID:bundle,launchedAt:ProcessStartTime.read(pid:app.processIdentifier))
         return true
     }
     // Explicit user-triggered scan. It never requests permission, activates apps, or switches Spaces.
@@ -117,7 +117,7 @@ public final class AXWindows: WindowBackend {
             guard let bundle=app.bundleIdentifier else {latestCaptureReport.globalReasons["applicationIdentifierUnavailable",default:0]+=1;continue}
             count(.applicationsVisited,bundle)
             // Finder and a few system apps can report no launch date; identity then rests on pid + AX pid + window ID.
-            if app.launchDate==nil {count(.processLaunchDateMissing,bundle)}
+            if ProcessStartTime.read(pid:app.processIdentifier)==nil {count(.processLaunchDateMissing,bundle)}
             let application=AXUIElementCreateApplication(app.processIdentifier)
             let timeout=AXUIElementSetMessagingTimeout(application,0.25)
             if timeout != .success {let error=AXFailure(operation:"AXMessagingTimeout",code:timeout.rawValue);exclude(.axTimeoutFailure,bundle,error:error);recordIssue(lk("%@：%@", "\(bundle)", "\(error)"));continue}
@@ -174,7 +174,7 @@ public final class AXWindows: WindowBackend {
             let now=ProcessInfo.processInfo.systemUptime
             let deadline=min(remoteDeadline,inspectionDeadline ?? .infinity)
             guard now<deadline else {skip("remoteTokenBudgetExhausted");continue}
-            let processKey="\(app.processIdentifier):\(app.launchDate?.timeIntervalSince1970 ?? 0)"
+            let processKey="\(app.processIdentifier):\(ProcessStartTime.read(pid:app.processIdentifier)?.timeIntervalSince1970 ?? 0)"
             let result=remoteLocator.search(pid:app.processIdentifier,processKey:processKey,wanted:wanted,timeBudget:remoteSearchPerApp,elementCap:remoteElementCap,deadline:deadline) {[weak self] element in
                 try? self?.cgID(element)
             }
@@ -252,13 +252,17 @@ public final class AXWindows: WindowBackend {
     }
     /// Per-request time limit for window reads. Scans stay quick (0.25 s per app); during a restore or warm-up
     /// reads wait longer, because a slow app (often Electron-based) otherwise looks broken and the move fails.
+    static func untitledMainIdentifier(windowID: UInt32,mainID: UInt32?,candidateIDs: [UInt32]) -> String? {
+        guard mainID==windowID,Set(candidateIDs)==[windowID] else { return nil }
+        return "single-main-window"
+    }
     public var patientReads=false
     public static let quickTimeout: Float=0.25
     public static let patientTimeout: Float=1.5
     public func readWindow(token: String) throws -> ObservedWindow? {
         guard let h=handles[token] else{return nil}
         _=AXUIElementSetMessagingTimeout(h.element,(patientReads || writesApproved) ? Self.patientTimeout : Self.quickTimeout)
-        guard let app=NSRunningApplication(processIdentifier:h.pid),!app.isTerminated,app.bundleIdentifier==h.bundleID,app.launchDate==h.launchedAt else{exclude(.processIdentityUnavailable,h.bundleID);return nil}
+        guard let app=NSRunningApplication(processIdentifier:h.pid),!app.isTerminated,app.bundleIdentifier==h.bundleID,ProcessStartTime.read(pid:h.pid)==h.launchedAt else{exclude(.processIdentityUnavailable,h.bundleID);return nil}
         var actualPID: pid_t=0
         let pidStatus=AXUIElementGetPid(h.element,&actualPID)
         guard pidStatus == .success else { throw AXFailure(operation:"AXWindowPID",code:pidStatus.rawValue) }
@@ -282,9 +286,18 @@ public final class AXWindows: WindowBackend {
         if minimized==false {count(.notMinimized,h.bundleID)}else if minimized==true {count(.minimized,h.bundleID)}else{exclude(.minimizedUnknown,h.bundleID)}
         if fullscreen==false {count(.notFullscreen,h.bundleID)}else if fullscreen==true {count(.fullscreen,h.bundleID)}else{exclude(.fullscreenUnknown,h.bundleID)}
         let ordinary=role==kAXWindowRole && subrole==kAXStandardWindowSubrole && fullscreen != nil && minimized != nil
+        // 无标题主窗口只能在该进程恰有一个普通候选窗口时用语义标识，绝不写入 PID/窗口 ID。
+        var identifier: String?
+        if title.isEmpty,(path ?? "").isEmpty,!BrowserTitles.isBrowser(h.bundleID) {
+            let candidates=inventory.candidates.filter{ $0.ownerPID==h.pid && WindowCandidateRules.exclusion($0)==nil }
+            let application=AXUIElementCreateApplication(h.pid)
+            let main=(try? readElements(application,kAXMainWindowAttribute,bundle:h.bundleID))?.first
+            let mainID=main.flatMap{try? cgID($0)}
+            identifier=Self.untitledMainIdentifier(windowID:h.windowID,mainID:mainID,candidateIDs:candidates.map(\.windowID))
+        }
         let membership:[UInt64]
         do{membership=try spaces.membership(windowID:h.windowID)}catch{exclude(.membershipReadFailure,h.bundleID);throw error}
-        return ObservedWindow(token:token,selector:WindowSelector(bundleID:h.bundleID,document:path,title:title),frame:Rect(point.x,point.y,dimensions.width,dimensions.height),spaceIDs:membership,ordinary:ordinary,minimized:minimized ?? false,fullScreen:fullscreen ?? false,processStartedAt:h.launchedAt)
+        return ObservedWindow(token:token,selector:WindowSelector(bundleID:h.bundleID,document:path,title:title,identifier:identifier),frame:Rect(point.x,point.y,dimensions.width,dimensions.height),spaceIDs:membership,ordinary:ordinary,minimized:minimized ?? false,fullScreen:fullscreen ?? false,processStartedAt:h.launchedAt)
     }
     /// Wakes the given apps before a restore and reports the ones that still do not answer.
     /// Electron apps build their accessibility tree only when asked (`AXManualAccessibility`, the switch screen

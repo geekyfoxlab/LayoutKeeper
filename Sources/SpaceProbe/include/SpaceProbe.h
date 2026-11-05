@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <ApplicationServices/ApplicationServices.h>
+// Kernel process lifetime timestamp; 0 means unavailable.
+double SPProcessStartTime(int32_t pid);
 // Experimental, fixture-only. A zero return means DISPATCHED, never verified success.
 int SPDispatchOwnedFixture(uint32_t windowID, uint64_t spaceID, char * _Nonnull detail, size_t capacity);
 // Runtime capability probe for cross-Space moves (no version table). Each field is 1 when present.
