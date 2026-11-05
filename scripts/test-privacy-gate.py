@@ -26,8 +26,8 @@ class PrivacyGateTests(unittest.TestCase):
         self.terms=self.root/"privacy-terms.local"; self.terms.write_text("# comment\nsecretword\nexample-mail.test\n")
         self.signing=self.root/"signing.local"; self.signing.write_text("# private\nLAYOUTKEEPER_TEAM_ID=TEAM123456\n")
     def tearDown(self): self.tmp.cleanup()
-    def run_gate(self,*paths):
-        with patch.dict("os.environ",ENV,clear=True):
+    def run_gate(self,*paths,env=ENV):
+        with patch.dict("os.environ",env,clear=True):
             return gate.main([*map(str,paths),"--terms-file",str(self.terms),"--signing-file",str(self.signing)])
     def leak(self,rel,content: bytes):
         p=self.app/rel; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(content)
@@ -38,6 +38,18 @@ class PrivacyGateTests(unittest.TestCase):
     def testCurrentUserAndHomeFail(self):
         self.leak("Contents/Resources/a.txt",b"built by FakeUser"); self.assertEqual(self.run_gate(self.app),1)
         self.leak("Contents/Resources/a.txt",b"/home/fakeuser/x"); self.assertEqual(self.run_gate(self.app),1)
+    def testShortUserDoesNotMatchIdentifiersOrInstructionBytes(self):
+        # 本次真实产物中的函数名及机器码片段均不代表构建者用户名。
+        self.leak("Contents/Resources/a.bin",b"applyHotkeys\x00_$s12applyHotkeysyyF\x00"+bytes.fromhex("863300541f010beb8a0000544c7968f86cffffb4efffff17940b40"))
+        self.assertEqual(self.run_gate(self.app,env={"USER":"lyh","HOME":"/home/lyh"}),0)
+    def testShortStandaloneUsernameStillFails(self):
+        for value in (b"built by LYH",b"lyh\x00",b"/home/lyh/project",b"author=lyh;",b"builder: lyh@example.org"):
+            with self.subTest(value=value):
+                self.leak("Contents/Resources/a.txt",value)
+                self.assertEqual(self.run_gate(self.app,env={"USER":"lyh","HOME":"/home/lyh"}),1)
+    def testExplicitPrivateTermsStillMatchInsideIdentifiers(self):
+        self.leak("Contents/Resources/a.txt",b"mySecretWordFunction")
+        self.assertEqual(self.run_gate(self.app),1)
     def testPrivateTermsAndSigningValuesFail(self):
         self.leak("Contents/Resources/a.txt",b"..SecretWord.."); self.assertEqual(self.run_gate(self.app),1)
         self.leak("Contents/Resources/a.txt",b"team TEAM123456"); self.assertEqual(self.run_gate(self.app),1)

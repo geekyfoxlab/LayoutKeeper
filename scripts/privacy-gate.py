@@ -5,7 +5,7 @@
 
 Scans every file in the given .app bundles / files / .dmg images (binaries via `strings -a`, everything else as text)
 and exits non-zero if it finds:
-  - absolute home paths ("/Users/"), the current $USER and $HOME;
+  - absolute home paths ("/Users/"), the current $USER as a standalone token, and $HOME;
   - private terms from the gitignored scripts/signing.local (values) and scripts/privacy-terms.local (one per line);
   - e-mail addresses that aren't on ALLOWED_EMAILS / ALLOWED_EMAIL_DOMAINS.
 Private terms are never printed; findings name the file and the kind of match only.
@@ -65,7 +65,13 @@ def scan_tree(root: Path,terms,label: str) -> list[str]:
         rel=f"{label}/{f.relative_to(root)}" if f!=root else label
         low=text.lower()
         for kind,term in terms:
-            if term.lower() in low: findings.append(f"{rel}: contains {kind}")
+            # 短用户名不能命中函数名（如 lyh 命中 applyHotkeys）或机器码中的标识符片段。
+            # 只收紧环境用户名的匹配；路径及显式私人词条仍扫描全部原始字节中的子串。
+            if kind == "$USER":
+                matched=re.search(rb"(?<![a-z0-9_])"+re.escape(term.lower())+rb"(?![a-z0-9_])",low) is not None
+            else:
+                matched=term.lower() in low
+            if matched: findings.append(f"{rel}: contains {kind}")
         for m in set(EMAIL.findall(text)):
             if not email_allowed(m): findings.append(f"{rel}: contains e-mail address ({m.split(b'@')[-1].decode(errors='replace')})")
     return list(dict.fromkeys(findings))
